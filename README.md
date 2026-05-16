@@ -216,3 +216,52 @@ while (1) {
     }
 }
 ```
+## ⚙️ Configuration Critique des Horloges et Signaux (STM32CubeMX)
+
+Le secret d'une capture d'image nette et stable sans tearing (déchirure d'image) réside dans l'alignement parfait des polarités des signaux entre le capteur OmniVision et le périphérique **DCMI** du STM32.
+
+### 1. Polarité des signaux (Timing Configuration)
+Dans l'onglet de configuration du périphérique **DCMI** sur STM32CubeMX, appliquez scrupuleusement les paramètres suivants pour correspondre aux registres par défaut configurés dans cette bibliothèque (`COM10`) :
+
+
+| Paramètre CubeMX | Valeur Recommandée | Explication / Registre Associé |
+| :--- | :--- | :--- |
+| **Pixel Clock Polarity** | `Falling Edge` | Les données sont lues sur le front descendant de `PCLK`. Garantit la stabilité de la donnée stable (stable data line). |
+| **Horizontal Synchronization Polarity** | `Active High` | Le signal `HREF` (ou `HSYNC`) est à l'état HAUT pendant la transmission d'une ligne de pixels. |
+| **Vertical Synchronization Polarity** | `Active High` | Le signal `VSYNC` passe à l'état HAUT pour indiquer le début d'une nouvelle trame d'image (`COM10_VSYNC_RISING`). |
+| **Embedded Synchronisation** | `Disable` | La caméra utilise des lignes matérielles dédiées pour les synchros (pas de codes BT.656 incrustés dans les données). |
+
+> ⚠️ **ATTENTION AU PIÈGE DE VSYNC** : Si votre image apparaît coupée en deux ou complètement instable, inversez la polarité de `Vertical Synchronization Polarity` dans CubeMX (`Active Low`). Certains modules matériels bas de gamme du commerce intègrent un inverseur à transistor sur leur PCB.
+
+### 2. Configuration de l'Horloge Maître (XCLK)
+Le capteur a besoin d'une horloge externe continue appelée **XCLK** (ou MCLK) pour faire tourner son DSP interne. Sans elle, le protocole I2C/SCCB ne répondra pas (`HAL_ERROR` ou `HAL_TIMEOUT`).
+
+Vous avez deux méthodes pour générer cette horloge depuis le STM32 :
+
+#### Méthode A : Utilisation de la sortie MCO (Recommandé)
+Activez la sortie d'horloge du microcontrôleur (**MCO1** ou **MCO2** selon votre carte) dans l'arbre des horloges (Clock Tree) :
+- **Source** : `HSE` (Cristal externe) ou `PLLCLK`
+- **Diviseur** : Ajustez le diviseur pour obtenir une fréquence stable située entre **10 MHz et 24 MHz** (24 MHz étant l'idéal pour l'OV7725).
+- Reliez la broche `PA8` (pour MCO1 sur de nombreux STM32) directement à la broche `XCLK` de la caméra.
+
+#### Méthode B : Génération par Timer (PWM)
+Si vos broches MCO sont déjà utilisées, configurez un canal de **Timer en mode PWM** :
+- **Fréquence du Timer** : Configurez le *Prescaler* et le *Counter Period* pour cibler exactement **12 MHz** ou **24 MHz**.
+- **Duty Cycle** (Rapport cyclique) : Fixez-le strictement à **50%** pour obtenir une horloge parfaitement symétrique.
+
+### 3. Schéma de Câblage Typique
+
+```text
+    STM32 (DCMI / I2C)              Capteur Caméra (DVP)
+┌───────────────────────┐          ┌────────────────────┐
+│          PA8 (MCO1)  ─┼─────────►│ XCLK / MCLK        │
+│          I2C1_SCL    ─┼─────────►│ SCL / SIOC         │
+│          I2C1_SDA    ─┼◄────────►│ SDA / SIOD         │
+│                       │          │                    │
+│          DCMI_VSYNC  ─┼◄─────────│ VSYNC              │
+│          DCMI_HREF   ─┼◄─────────│ HREF               │
+│          DCMI_PIXCLK ─┼◄─────────│ PCLK               │
+│                       │          │                    │
+│          DCMI_D0..D7  ─┼◄─────────│ D0..D7             │
+└───────────────────────┘          └────────────────────┘
+```
